@@ -449,6 +449,7 @@
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
         import { getDatabase, ref, get, set, update, push, query, orderByChild, equalTo, onValue, runTransaction, off, limitToLast, serverTimestamp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js"; // Added serverTimestamp
         import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, sendPasswordResetEmail } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
+        import { getMessaging, getToken, onMessage } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-messaging.js";
 
         // ===============================================================
         // ================= !!! IMPORTANT !!! ===========================
@@ -471,7 +472,7 @@
          // ===============================================================
 
         // Initialize Firebase
-        let app, db, auth;
+        let app, db, auth, messaging;
         try {
             // Check if placeholder values are still present
             if (firebaseConfig.apiKey === "YOUR_API_KEY" || firebaseConfig.projectId === "YOUR_PROJECT_ID") {
@@ -482,6 +483,7 @@
             app = initializeApp(firebaseConfig);
             db = getDatabase(app);
             auth = getAuth(app);
+            messaging = getMessaging(app);
             console.log("Firebase Initialized (check config if using placeholders)");
         } catch (error) {
             console.error("Firebase initialization failed:", error);
@@ -564,7 +566,19 @@
              if (!targetElement) { alert('Element to copy from not found.'); return; }
              const textToCopy = targetElement.textContent;
              if (!textToCopy || textToCopy === 'N/A' || textToCopy.includes('placeholder')) { alert('Nothing to copy.'); return; }
-             navigator.clipboard.writeText(textToCopy).then(() => alert('Copied!')).catch(err => { console.error('Failed to copy:', err); alert('Failed to copy.'); });
+             navigator.clipboard.writeText(textToCopy).then(() => showToast('Copied!')).catch(err => { console.error('Failed to copy:', err); alert('Failed to copy.'); });
+        }
+        function showToast(message, type = 'success') {
+            const toastEl = document.createElement('div');
+            toastEl.className = `toast position-fixed top-0 end-0 p-3 m-3 text-bg-${type} border-0`;
+            toastEl.setAttribute('role', 'alert');
+            toastEl.setAttribute('aria-live', 'assertive');
+            toastEl.setAttribute('aria-atomic', 'true');
+            toastEl.innerHTML = `<div class="toast-body">${message}</div>`;
+            document.body.appendChild(toastEl);
+            const toast = new bootstrap.Toast(toastEl, { delay: 3000 });
+            toast.show();
+            toastEl.addEventListener('hidden.bs.toast', () => toastEl.remove());
         }
         function shareReferral(code) { if (!navigator.share) { alert('Web Share not supported. Copy the code manually.'); return; } if (!code || code === 'N/A') { alert('Referral code not available.'); return; } navigator.share({ title: 'Join Me on Gaming Tournament!', text: `Join using my referral code: ${code} & get rewards! App: ${window.location.origin}`, url: window.location.origin }).catch((error) => console.log('Error sharing', error)); }
         function generateReferralCode(length = 8) { const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'; let result = ''; for (let i = 0; i < length; i++) result += chars.charAt(Math.floor(Math.random() * chars.length)); return result; }
@@ -793,12 +807,60 @@
                      populateUserInfo(user, userProfile); setupRealtimeListeners(user.uid); updateGlobalUI(true);
                      const targetSection = (currentSectionId === 'login-section' || !getElement(currentSectionId)) ? 'home-section' : currentSectionId;
                      showSection(targetSection);
+                     // After user is logged in and profile is ready, ask for notification permission
+                     requestNotificationPermission();
                  } catch (error) { console.error("Profile handling error:", error); alert("Error loading profile. Logging out. " + error.message); try { await logoutUser(); } catch (logoutErr) {} }
              } else { // Logged Out
                  console.log("Auth State: Logged Out"); currentUser = null; userProfile = {}; updateGlobalUI(false); showSection('login-section');
              }
              showLoader(false);
 }
+
+// --- FCM Notification Functions ---
+async function requestNotificationPermission() {
+    if (!messaging || !currentUser) {
+        console.log("FCM not supported or user not logged in.");
+        return;
+    }
+
+    console.log('Requesting notification permission...');
+    try {
+        const permission = await Notification.requestPermission();
+        if (permission === 'granted') {
+            console.log('Notification permission granted.');
+            await getAndStoreFCMToken();
+        } else {
+            console.log('Unable to get permission to notify.');
+        }
+    } catch (error) {
+        console.error('An error occurred while requesting permission:', error);
+    }
+}
+
+async function getAndStoreFCMToken() {
+    try {
+        const currentToken = await getToken(messaging, { vapidKey: 'YOUR_VAPID_KEY_FROM_FIREBASE_SETTINGS' }); // Replace with your actual VAPID key
+        if (currentToken) {
+            console.log('FCM Token:', currentToken);
+            // Save the token to the user's profile in the database
+            const userRef = ref(db, 'users/' + currentUser.uid);
+            await update(userRef, { fcmToken: currentToken });
+            console.log('FCM token stored in Firestore.');
+        } else {
+            console.log('No registration token available. Request permission to generate one.');
+        }
+    } catch (err) {
+        console.error('An error occurred while retrieving token. ', err);
+    }
+}
+
+// Listen for messages when the app is in the foreground
+onMessage(messaging, (payload) => {
+    console.log('Message received in foreground. ', payload);
+    const { notification } = payload;
+    // Show a custom toast notification
+    showToast(`<strong>${notification.title}</strong><br>${notification.body}`, 'info');
+});
 
 // --- Database Interaction Functions ---
 async function loadAppSettings() {
